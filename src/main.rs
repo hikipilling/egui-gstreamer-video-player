@@ -38,11 +38,10 @@ struct VideoFrame {
 // Our custom data structure to hold state
 struct MediaPlayer {
     pipeline: gst::Element,
-    appsink: gst_app::AppSink,
+    _appsink: gst_app::AppSink,
     duration: Option<gst::ClockTime>,
     position: Option<gst::ClockTime>,
     state: gst::State,
-    uri: String,
     video_frame: Arc<Mutex<Option<VideoFrame>>>,
     texture: Option<TextureHandle>,
     _bus_watch: BusWatchGuard,
@@ -168,11 +167,10 @@ impl MediaPlayer {
 
         Ok(MediaPlayer {
             pipeline,
-            appsink,
+            _appsink: appsink,
             duration: None,
             position: None,
             state: gst::State::Null,
-            uri,
             video_frame,
             texture: None,
             _bus_watch: bus_watch,
@@ -239,12 +237,6 @@ impl MediaPlayer {
 
     fn update_texture(&mut self, ctx: &egui::Context) {
         if let Some(frame) = self.video_frame.lock().unwrap().as_ref() {
-            let pixels: Vec<_> = frame
-                .data
-                .chunks_exact(4)
-                .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
-                .collect();
-
             self.texture = Some(ctx.load_texture(
                 "video-frame",
                 egui::ColorImage::from_rgba_unmultiplied(
