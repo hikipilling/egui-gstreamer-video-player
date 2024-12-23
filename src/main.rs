@@ -258,8 +258,30 @@ impl eframe::App for MediaPlayer {
         egui::CentralPanel::default().show(ctx, |ui| {
             // Video display area
             if let Some(texture) = &self.texture {
-                let available_size = ui.available_size();
-                ui.add(egui::Image::new((texture.id(), available_size)));
+                let max_height = ui.available_height() * 0.8; // Use 80% of available height
+                let max_width = ui.available_width();
+
+                // Get original video dimensions
+                let orig_size = texture.size_vec2();
+                let aspect_ratio = orig_size.x / orig_size.y;
+
+                // Calculate new size maintaining aspect ratio
+                let mut new_height = max_height;
+                let mut new_width = new_height * aspect_ratio;
+
+                // If width exceeds available space, scale down proportionally
+                if new_width > max_width {
+                    new_width = max_width;
+                    new_height = new_width / aspect_ratio;
+                }
+
+                // Center the video
+                ui.vertical_centered(|ui| {
+                    ui.add(egui::Image::new((
+                        texture.id(),
+                        egui::vec2(new_width, new_height),
+                    )));
+                });
             } else {
                 let frame = egui::Frame::dark_canvas(&ctx.style());
                 frame.show(ui, |ui| {
