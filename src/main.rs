@@ -45,6 +45,7 @@ struct MediaPlayer {
     texture: Option<TextureHandle>,
     _bus_watch: BusWatchGuard,
     main_context: glib::MainContext,
+    volume: f64,
 }
 
 impl MediaPlayer {
@@ -183,7 +184,13 @@ impl MediaPlayer {
             texture: None,
             _bus_watch: bus_watch,
             main_context: MainContext::default(),
+            volume: 1.0,
         })
+    }
+
+    fn set_volume(&mut self, volume: f64) {
+        self.volume = volume.clamp(0.0, 1.0);
+        self.pipeline.set_property("volume", self.volume);
     }
 
     fn get_state(&self) -> gst::State {
@@ -227,6 +234,7 @@ impl MediaPlayer {
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to stop: {}", e)))?;
 
         println!("Stop state change result: {:?}", ret);
+        self.position = Some(gst::ClockTime::ZERO);
         Ok(())
     }
 
@@ -284,7 +292,7 @@ impl eframe::App for MediaPlayer {
 
         let play_button_text = match self.get_state() {
             gst::State::Playing => "⏸",
-            _ => "▶",
+            _ => "⏵",
         };
 
         self.update_position();
@@ -308,36 +316,53 @@ impl eframe::App for MediaPlayer {
                     println!("{:?}", self.get_state());
                     let _ = self.toggle_playback();
                 }
-                if ui.button("⏸").clicked() {
-                    let _ = self.pause();
-                }
                 if ui.button("⏹").clicked() {
                     let _ = self.stop();
                 }
 
                 // Position slider
+                ui.style_mut().spacing.slider_width = ui.available_width() - 200.0;
                 if let (Some(position), Some(duration)) = (self.position, self.duration) {
                     let mut pos = position.seconds() as f64 / duration.seconds() as f64;
-                    ui.style_mut().spacing.slider_width = ui.available_width() - 90.0;
                     if ui
                         .add(egui::Slider::new(&mut pos, 0.0..=1.0).show_value(false))
                         .changed()
                     {
                         let _ = self.seek(pos);
                     }
+                } else {
+                    let mut pos = 0.0;
+                    ui.add(
+                        egui::Slider::new(&mut pos, 0.0..=1.0)
+                            .step_by(0.0)
+                            .show_value(false),
+                    );
                 }
-                if let (Some(position), Some(duration)) = (self.position, self.duration) {
-                    ui.add_sized(
-                        [80.0, ui.text_style_height(&egui::TextStyle::Body)],
-                        egui::Label::new(format!(
+
+                ui.horizontal(|ui| {
+                    ui.set_width(200.0);
+                    if let (Some(position), Some(duration)) = (self.position, self.duration) {
+                        ui.label(format!(
                             "{:02}:{:02} / {:02}:{:02}",
                             position.seconds() / 60,
                             position.seconds() % 60,
                             duration.seconds() / 60,
                             duration.seconds() % 60
-                        )),
-                    );
-                }
+                        ));
+                    } else {
+                        ui.label("00:00 / 00:00");
+                    }
+                    ui.separator();
+                    ui.label("🔊");
+                    let mut volume = self.volume;
+                    ui.style_mut().spacing.slider_width = ui.available_width() - 12.0;
+                    if ui
+                        .add(egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false))
+                        .changed()
+                    {
+                        self.set_volume(volume);
+                    }
+                });
             });
             ui.add_space(3.0);
         });
@@ -384,6 +409,7 @@ fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
+            .with_min_inner_size([400.0, 300.0])
             .with_title("Video Player"),
         ..Default::default()
     };
