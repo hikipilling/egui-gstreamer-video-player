@@ -41,7 +41,6 @@ struct MediaPlayer {
     _appsink: gst_app::AppSink,
     duration: Option<gst::ClockTime>,
     position: Option<gst::ClockTime>,
-    state: gst::State,
     video_frame: Arc<Mutex<Option<VideoFrame>>>,
     texture: Option<TextureHandle>,
     _bus_watch: BusWatchGuard,
@@ -95,7 +94,7 @@ impl MediaPlayer {
         pipeline.set_property("video-sink", &video_bin);
 
         // Set default URI
-        let uri = "file:///home/lain/Downloads/testvideo.mp4".to_string();
+        let uri = "file:///home/lain/Downloads/big_buck_bunny_720p_h264.mov".to_string();
         pipeline.set_property("uri", &uri);
 
         let video_frame = Arc::new(Mutex::new(None));
@@ -143,6 +142,10 @@ impl MediaPlayer {
                                 err.debug()
                             );
                         }
+                        gst::MessageView::Eos(_) => {
+                            println!("End of stream reached");
+                            let _ = pipeline.set_state(gst::State::Ready);
+                        }
                         gst::MessageView::StateChanged(state) => {
                             if state
                                 .src()
@@ -165,16 +168,24 @@ impl MediaPlayer {
             })
             .expect("Failed to add bus watch");
 
+        let ret = pipeline
+            .set_state(gst::State::Playing)
+            .map_err(|e| PlayerError::GstreamerError(format!("Failed to play: {}", e)))?;
+        println!("Play state change result: {:?}", ret);
+
         Ok(MediaPlayer {
             pipeline,
             _appsink: appsink,
             duration: None,
             position: None,
-            state: gst::State::Null,
             video_frame,
             texture: None,
             _bus_watch: bus_watch,
         })
+    }
+
+    fn get_state(&self) -> gst::State {
+        self.pipeline.current_state()
     }
 
     fn play(&mut self) -> Result<(), PlayerError> {
@@ -184,7 +195,6 @@ impl MediaPlayer {
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to play: {}", e)))?;
 
         println!("Play state change result: {:?}", ret);
-        self.state = gst::State::Playing;
         Ok(())
     }
 
@@ -195,7 +205,6 @@ impl MediaPlayer {
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to pause: {}", e)))?;
 
         println!("Pause state change result: {:?}", ret);
-        self.state = gst::State::Paused;
         Ok(())
     }
 
@@ -206,8 +215,16 @@ impl MediaPlayer {
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to stop: {}", e)))?;
 
         println!("Stop state change result: {:?}", ret);
-        self.state = gst::State::Ready;
         Ok(())
+    }
+
+    fn toggle_playback(&mut self) -> Result<(), PlayerError> {
+        match self.get_state() {
+            gst::State::Playing => self.pause(),
+            gst::State::Paused => self.play(),
+            gst::State::Ready => self.play(),
+            _ => Ok(()),
+        }
     }
 
     fn update_position(&mut self) {
@@ -251,49 +268,31 @@ impl MediaPlayer {
 
 impl eframe::App for MediaPlayer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Update position and texture
+        let play_button_text = match self.get_state() {
+            gst::State::Playing => "⏸",
+            _ => "▶",
+        };
+
         self.update_position();
         self.update_texture(ctx);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Video display area
-            if let Some(texture) = &self.texture {
-                let max_height = ui.available_height() * 0.8; // Use 80% of available height
-                let max_width = ui.available_width();
-
-                // Get original video dimensions
-                let orig_size = texture.size_vec2();
-                let aspect_ratio = orig_size.x / orig_size.y;
-
-                // Calculate new size maintaining aspect ratio
-                let mut new_height = max_height;
-                let mut new_width = new_height * aspect_ratio;
-
-                // If width exceeds available space, scale down proportionally
-                if new_width > max_width {
-                    new_width = max_width;
-                    new_height = new_width / aspect_ratio;
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("Open").clicked() {
+                    println!("open file");
                 }
+                if ui.button("Quit").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
 
-                // Center the video
-                ui.vertical_centered(|ui| {
-                    ui.add(egui::Image::new((
-                        texture.id(),
-                        egui::vec2(new_width, new_height),
-                    )));
-                });
-            } else {
-                let frame = egui::Frame::dark_canvas(&ctx.style());
-                frame.show(ui, |ui| {
-                    ui.set_min_size(egui::vec2(640.0, 360.0));
-                    ui.label("Waiting for video...");
-                });
-            }
-
-            // Controls
+        egui::TopBottomPanel::bottom("video_controls").show(ctx, |ui| {
+            ui.add_space(3.0);
             ui.horizontal(|ui| {
-                if ui.button("⏵").clicked() {
-                    let _ = self.play(); // Handle error in production code
+                if ui.button(play_button_text).clicked() {
+                    println!("{:?}", self.get_state());
+                    let _ = self.toggle_playback();
                 }
                 if ui.button("⏸").clicked() {
                     let _ = self.pause();
@@ -305,25 +304,60 @@ impl eframe::App for MediaPlayer {
                 // Position slider
                 if let (Some(position), Some(duration)) = (self.position, self.duration) {
                     let mut pos = position.seconds() as f64 / duration.seconds() as f64;
-                    if ui.add(egui::Slider::new(&mut pos, 0.0..=1.0)).changed() {
+                    ui.style_mut().spacing.slider_width = ui.available_width() - 90.0;
+                    if ui
+                        .add(egui::Slider::new(&mut pos, 0.0..=1.0).show_value(false))
+                        .changed()
+                    {
                         let _ = self.seek(pos);
                     }
                 }
+                if let (Some(position), Some(duration)) = (self.position, self.duration) {
+                    ui.add_sized(
+                        [80.0, ui.text_style_height(&egui::TextStyle::Body)],
+                        egui::Label::new(format!(
+                            "{:02}:{:02} / {:02}:{:02}",
+                            position.seconds() / 60,
+                            position.seconds() % 60,
+                            duration.seconds() / 60,
+                            duration.seconds() % 60
+                        )),
+                    );
+                }
             });
-
-            // Display current position and duration
-            if let (Some(position), Some(duration)) = (self.position, self.duration) {
-                ui.label(format!(
-                    "{:02}:{:02} / {:02}:{:02}",
-                    position.seconds() / 60,
-                    position.seconds() % 60,
-                    duration.seconds() / 60,
-                    duration.seconds() % 60
-                ));
-            }
+            ui.add_space(3.0);
         });
 
-        // Request continuous updates
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(ctx.style().visuals.panel_fill))
+            .show(ctx, |ui| {
+                if let Some(texture) = &self.texture {
+                    let original_size = texture.size_vec2();
+                    let aspect_ratio = original_size.x / original_size.y;
+                    let mut scaled_height = ui.available_height();
+                    let mut scaled_width = scaled_height * aspect_ratio;
+                    if scaled_width > ui.available_width() {
+                        scaled_width = ui.available_width();
+                        scaled_height = scaled_width / aspect_ratio;
+                    }
+                    egui::Frame::none()
+                        .fill(egui::Color32::BLACK)
+                        .show(ui, |ui| {
+                            ui.centered_and_justified(|ui| {
+                                ui.add(egui::Image::new((
+                                    texture.id(),
+                                    egui::vec2(scaled_width, scaled_height),
+                                )));
+                            });
+                        });
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(ui.available_height() / 2.0);
+                        let _ = ui.button("Select file");
+                    });
+                }
+            });
+
         ctx.request_repaint_after(Duration::from_millis(16)); // ~60 FPS
     }
 }
@@ -332,12 +366,12 @@ fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
-            .with_title("Rust Media Player"),
+            .with_title("Video Player"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "Rust Media Player",
+        "Video Player",
         options,
         Box::new(
             |_cc| -> Result<
