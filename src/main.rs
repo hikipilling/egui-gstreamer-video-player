@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{TextureHandle, ViewportBuilder};
-use glib;
+use glib::{self, MainContext};
 use gstreamer as gst;
 use gstreamer::bus::BusWatchGuard;
 use gstreamer::prelude::*;
@@ -44,6 +44,7 @@ struct MediaPlayer {
     video_frame: Arc<Mutex<Option<VideoFrame>>>,
     texture: Option<TextureHandle>,
     _bus_watch: BusWatchGuard,
+    main_context: glib::MainContext,
 }
 
 impl MediaPlayer {
@@ -94,7 +95,7 @@ impl MediaPlayer {
         pipeline.set_property("video-sink", &video_bin);
 
         // Set default URI
-        let uri = "file:///home/lain/Downloads/big_buck_bunny_720p_h264.mov".to_string();
+        let uri = "file:///home/lain/Downloads/testvideo.mp4".to_string();
         pipeline.set_property("uri", &uri);
 
         let video_frame = Arc::new(Mutex::new(None));
@@ -181,11 +182,22 @@ impl MediaPlayer {
             video_frame,
             texture: None,
             _bus_watch: bus_watch,
+            main_context: MainContext::default(),
         })
     }
 
     fn get_state(&self) -> gst::State {
         self.pipeline.current_state()
+    }
+
+    fn set_null(&mut self) -> Result<(), PlayerError> {
+        let ret = self
+            .pipeline
+            .set_state(gst::State::Null)
+            .map_err(|e| PlayerError::GstreamerError(format!("Failed to set null: {}", e)))?;
+
+        println!("Null state change result: {:?}", ret);
+        Ok(())
     }
 
     fn play(&mut self) -> Result<(), PlayerError> {
@@ -268,6 +280,8 @@ impl MediaPlayer {
 
 impl eframe::App for MediaPlayer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        while self.main_context.iteration(false) {}
+
         let play_button_text = match self.get_state() {
             gst::State::Playing => "⏸",
             _ => "▶",
@@ -359,6 +373,10 @@ impl eframe::App for MediaPlayer {
             });
 
         ctx.request_repaint_after(Duration::from_millis(16)); // ~60 FPS
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let _ = self.set_null();
     }
 }
 
