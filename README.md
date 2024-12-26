@@ -1,6 +1,6 @@
 # Simple Video Player
 
-A simple video player that demonstrates how to integrate GStreamer with Egui in Rust. It took me AGES to figure out how to do this so I hope it helps someone out :)
+A simple, performant video player that demonstrates how to integrate GStreamer with Egui in Rust. It took me AGES to figure out how to do this so I hope it helps someone out :)
 
 ## Screenshots
 
@@ -25,6 +25,8 @@ You will need:
 - GTK development libraries (for file dialogs)
 
 Arch:
-`sudo pacman -S gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav gtk3`
+```
+sudo pacman -S gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav gtk3
+```
 
 Feel free to submit a pull request for dependency installation on your own system.
