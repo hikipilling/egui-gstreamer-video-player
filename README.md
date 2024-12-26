@@ -4,7 +4,8 @@ A simple video player that demonstrates how to integrate GStreamer with Egui in 
 
 ## Screenshots
 
-TODO
+![video playing](https://github.com/user-attachments/assets/838a0ea9-6915-4d46-bf01-b0174b5e340c)
+![no video selected](https://github.com/user-attachments/assets/3349aa23-d932-4787-84b2-dbf9e6022da7)
 
 ## Features
 
