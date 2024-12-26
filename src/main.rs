@@ -192,7 +192,7 @@ impl MediaPlayer {
     /// Opens a file dialog for the user to select a video file
     fn select_file(&mut self) -> Result<(), PlayerError> {
         if let Some(path) = FileDialog::new()
-            .add_filter("Video", &["mp4", "webm", "mkv", "avi"])
+            .add_filter("Video", &["mp4", "webm", "mkv", "avi", "mov"])
             .pick_file()
         {
             self.load_file(path)?;
