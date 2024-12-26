@@ -6,7 +6,9 @@ use gstreamer::bus::BusWatchGuard;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
+use rfd::FileDialog;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -96,8 +98,8 @@ impl MediaPlayer {
         pipeline.set_property("video-sink", &video_bin);
 
         // Set default URI
-        let uri = "file:///home/lain/Downloads/testvideo.mp4".to_string();
-        pipeline.set_property("uri", &uri);
+        //let uri = "file:///home/lain/Downloads/testvideo.mp4".to_string();
+        //pipeline.set_property("uri", &uri);
 
         let video_frame = Arc::new(Mutex::new(None));
         let video_frame_clone = Arc::clone(&video_frame);
@@ -170,10 +172,10 @@ impl MediaPlayer {
             })
             .expect("Failed to add bus watch");
 
-        let ret = pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|e| PlayerError::GstreamerError(format!("Failed to play: {}", e)))?;
-        println!("Play state change result: {:?}", ret);
+        //let ret = pipeline
+        //    .set_state(gst::State::Playing)
+        //    .map_err(|e| PlayerError::GstreamerError(format!("Failed to play: {}", e)))?;
+        //println!("Play state change result: {:?}", ret);
 
         Ok(MediaPlayer {
             pipeline,
@@ -186,6 +188,26 @@ impl MediaPlayer {
             main_context: MainContext::default(),
             volume: 1.0,
         })
+    }
+
+    fn select_file(&mut self) -> Result<(), PlayerError> {
+        if let Some(path) = FileDialog::new()
+            .add_filter("Video", &["mp4", "webm", "mkv", "avi"])
+            .pick_file()
+        {
+            self.load_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn load_file(&mut self, path: PathBuf) -> Result<(), PlayerError> {
+        self.stop()?;
+        let uri = format!("file://{}", path.to_str().unwrap_or(""));
+        self.pipeline.set_property("uri", &uri);
+        self.duration = None;
+        self.position = Some(gst::ClockTime::ZERO);
+        self.play()?;
+        Ok(())
     }
 
     fn set_volume(&mut self, volume: f64) {
@@ -300,8 +322,11 @@ impl eframe::App for MediaPlayer {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("Open").clicked() {
-                    println!("open file");
+                if ui.button("Open file").clicked() {
+                    if let Err(e) = self.select_file() {
+                        eprintln!("Error selecting file: {}", e);
+                    }
+                    ui.close_menu();
                 }
                 if ui.button("Quit").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -392,7 +417,11 @@ impl eframe::App for MediaPlayer {
                 } else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(ui.available_height() / 2.0);
-                        let _ = ui.button("Select file");
+                        if ui.button("Select file").clicked() {
+                            if let Err(e) = self.select_file() {
+                                eprintln!("Error selecting file: {}", e);
+                            }
+                        }
                     });
                 }
             });
