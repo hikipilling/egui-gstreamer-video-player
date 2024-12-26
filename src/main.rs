@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-// Custom error type that implements Send + Sync
+/// Custom error type for the video player that can be safely sent between threads
 #[derive(Debug)]
 enum PlayerError {
     GstreamerError(String),
@@ -30,38 +30,41 @@ impl fmt::Display for PlayerError {
     }
 }
 
-// Structure to hold video frame data
+/// Represents a single frame of video data
 struct VideoFrame {
     width: i32,
     height: i32,
-    data: Vec<u8>,
+    data: Vec<u8>, // RGBA pixel data
 }
 
-// Our custom data structure to hold state
+/// The main media player structure that handles both GStreamer pipeline and UI state
 struct MediaPlayer {
-    pipeline: gst::Element,
-    _appsink: gst_app::AppSink,
-    duration: Option<gst::ClockTime>,
-    position: Option<gst::ClockTime>,
-    video_frame: Arc<Mutex<Option<VideoFrame>>>,
-    texture: Option<TextureHandle>,
-    _bus_watch: BusWatchGuard,
-    main_context: glib::MainContext,
-    volume: f64,
+    pipeline: gst::Element,                      // The GStreamer playbin pipeline
+    _appsink: gst_app::AppSink,                  // Sink element that receives video frames
+    duration: Option<gst::ClockTime>,            // Total duration of the current media
+    position: Option<gst::ClockTime>,            // Current playback position
+    video_frame: Arc<Mutex<Option<VideoFrame>>>, // Current video frame data
+    texture: Option<TextureHandle>,              // Egui texture for displaying the video
+    _bus_watch: BusWatchGuard,                   // Watch for GStreamer bus messages
+    main_context: glib::MainContext,             // GLib main context for event processing
+    volume: f64,                                 // Playback volume (0.0 to 1.0)
 }
 
 impl MediaPlayer {
+    /// Creates a new MediaPlayer instance, initializing the GStreamer pipeline
+    /// and setting up video processing
     fn new() -> Result<Self, PlayerError> {
         // Initialize GStreamer
         gst::init().map_err(|e| PlayerError::InitializationError(e.to_string()))?;
 
-        // Create playbin (which is already a pipeline)
+        // Create playbin element (an all-in-one media player pipeline)
         let pipeline = gst::ElementFactory::make("playbin")
             .name("playbin")
             .build()
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to create playbin: {}", e)))?;
 
-        // Create appsink for video
+        // Create appsink for receiving video frames
+        // Configure it to receive RGBA video for easy display in Egui
         let appsink = gst_app::AppSink::builder()
             .name("videosink")
             .caps(
@@ -71,9 +74,9 @@ impl MediaPlayer {
             )
             .build();
 
-        // Create the video conversion bin
+        // Create a bin for video conversion
+        // This ensures we get the video format we want (RGBA)
         let video_bin = gst::Bin::new();
-
         let videoconvert = gst::ElementFactory::make("videoconvert")
             .build()
             .map_err(|e| PlayerError::GstreamerError(e.to_string()))?;
@@ -81,12 +84,12 @@ impl MediaPlayer {
         video_bin.add(&videoconvert).unwrap();
         video_bin.add(appsink.upcast_ref::<gst::Element>()).unwrap();
 
-        // Link elements
+        // Link the converter to the sink
         videoconvert
             .link(appsink.upcast_ref::<gst::Element>())
             .unwrap();
 
-        // Create ghost pad
+        // Create a ghost pad to expose the videoconvert sink pad on the bin
         let sink_pad = videoconvert.static_pad("sink").unwrap();
         let ghost_pad = gst::GhostPad::builder_with_target(&sink_pad)
             .unwrap()
@@ -94,13 +97,14 @@ impl MediaPlayer {
             .build();
         video_bin.add_pad(&ghost_pad).unwrap();
 
-        // Set video sink on playbin
+        // Configure the pipeline to use our video processing bin
         pipeline.set_property("video-sink", &video_bin);
 
+        // Set up shared storage for video frames
         let video_frame = Arc::new(Mutex::new(None));
         let video_frame_clone = Arc::clone(&video_frame);
 
-        // Configure appsink callbacks
+        // Configure the appsink to handle incoming video frames
         appsink.set_callbacks(
             gst_app::AppSinkCallbacks::builder()
                 .new_sample(move |appsink| {
@@ -108,14 +112,17 @@ impl MediaPlayer {
                     let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
                     let caps = sample.caps().ok_or(gst::FlowError::Error)?;
 
+                    // Get video dimensions from the caps
                     let video_info =
                         gst_video::VideoInfo::from_caps(caps).map_err(|_| gst::FlowError::Error)?;
                     let width = video_info.width() as i32;
                     let height = video_info.height() as i32;
 
+                    // Copy frame data
                     let mapped_buffer = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
                     let data = mapped_buffer.to_vec();
 
+                    // Store the frame for later display
                     *video_frame_clone.lock().unwrap() = Some(VideoFrame {
                         width,
                         height,
@@ -127,7 +134,7 @@ impl MediaPlayer {
                 .build(),
         );
 
-        // Add bus watch
+        // Set up bus watch to handle pipeline messages
         let pipeline_weak = pipeline.downgrade();
         let bus = pipeline.bus().unwrap();
         let bus_watch = bus
@@ -147,6 +154,7 @@ impl MediaPlayer {
                             let _ = pipeline.set_state(gst::State::Ready);
                         }
                         gst::MessageView::StateChanged(state) => {
+                            // Only print state changes of the pipeline
                             if state
                                 .src()
                                 .map(|s| {
@@ -155,7 +163,7 @@ impl MediaPlayer {
                                 .unwrap_or(false)
                             {
                                 println!(
-                                    "State changed from {:?} -> {:?}",
+                                    "Pipeline state changed: {:?} -> {:?}",
                                     state.old(),
                                     state.current()
                                 );
@@ -181,6 +189,7 @@ impl MediaPlayer {
         })
     }
 
+    /// Opens a file dialog for the user to select a video file
     fn select_file(&mut self) -> Result<(), PlayerError> {
         if let Some(path) = FileDialog::new()
             .add_filter("Video", &["mp4", "webm", "mkv", "avi"])
@@ -191,6 +200,7 @@ impl MediaPlayer {
         Ok(())
     }
 
+    /// Loads and starts playing a video file from the given path
     fn load_file(&mut self, path: PathBuf) -> Result<(), PlayerError> {
         self.stop()?;
         let uri = format!("file://{}", path.to_str().unwrap_or(""));
@@ -201,65 +211,68 @@ impl MediaPlayer {
         Ok(())
     }
 
+    /// Sets the playback volume (0.0 to 1.0)
     fn set_volume(&mut self, volume: f64) {
         self.volume = volume.clamp(0.0, 1.0);
         self.pipeline.set_property("volume", self.volume);
     }
 
+    /// Gets the current state of the pipeline
     fn get_state(&self) -> gst::State {
         self.pipeline.current_state()
     }
 
+    /// Sets the pipeline to NULL state (completely stopped)
     fn set_null(&mut self) -> Result<(), PlayerError> {
         let ret = self
             .pipeline
             .set_state(gst::State::Null)
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to set null: {}", e)))?;
-
-        println!("Null state change result: {:?}", ret);
+        println!("Pipeline set to NULL state: {:?}", ret);
         Ok(())
     }
 
+    /// Starts or resumes playback
     fn play(&mut self) -> Result<(), PlayerError> {
         let ret = self
             .pipeline
             .set_state(gst::State::Playing)
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to play: {}", e)))?;
-
-        println!("Play state change result: {:?}", ret);
+        println!("Pipeline set to PLAYING state: {:?}", ret);
         Ok(())
     }
 
+    /// Pauses playback
     fn pause(&mut self) -> Result<(), PlayerError> {
         let ret = self
             .pipeline
             .set_state(gst::State::Paused)
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to pause: {}", e)))?;
-
-        println!("Pause state change result: {:?}", ret);
+        println!("Pipeline set to PAUSED state: {:?}", ret);
         Ok(())
     }
 
+    /// Stops playback and resets position
     fn stop(&mut self) -> Result<(), PlayerError> {
         let ret = self
             .pipeline
             .set_state(gst::State::Ready)
             .map_err(|e| PlayerError::GstreamerError(format!("Failed to stop: {}", e)))?;
-
-        println!("Stop state change result: {:?}", ret);
+        println!("Pipeline set to READY state: {:?}", ret);
         self.position = Some(gst::ClockTime::ZERO);
         Ok(())
     }
 
+    /// Toggles between playing and paused states
     fn toggle_playback(&mut self) -> Result<(), PlayerError> {
         match self.get_state() {
             gst::State::Playing => self.pause(),
-            gst::State::Paused => self.play(),
-            gst::State::Ready => self.play(),
+            gst::State::Paused | gst::State::Ready => self.play(),
             _ => Ok(()),
         }
     }
 
+    /// Updates the current playback position and duration
     fn update_position(&mut self) {
         if let Some(position) = self.pipeline.query_position::<gst::ClockTime>() {
             self.position = Some(position);
@@ -272,6 +285,7 @@ impl MediaPlayer {
         }
     }
 
+    /// Seeks to a specific position (0.0 to 1.0) in the video
     fn seek(&mut self, position: f64) -> Result<(), PlayerError> {
         if let Some(duration) = self.duration {
             let position = (position * duration.nseconds() as f64) as i64;
@@ -285,6 +299,7 @@ impl MediaPlayer {
         Ok(())
     }
 
+    /// Updates the Egui texture with the current video frame
     fn update_texture(&mut self, ctx: &egui::Context) {
         if let Some(frame) = self.video_frame.lock().unwrap().as_ref() {
             self.texture = Some(ctx.load_texture(
@@ -298,31 +313,35 @@ impl MediaPlayer {
         }
     }
 
+    /// Toggles fullscreen mode
     fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
         let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
     }
 
+    /// Exits fullscreen mode
     fn fullscreen_off(&mut self, ctx: &egui::Context) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     }
 
+    /// Checks if the player is currently in fullscreen mode
     fn is_fullscreen(&mut self, ctx: &egui::Context) -> bool {
         ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
     }
 }
 
+/// Implementation of the Egui App trait for our MediaPlayer
 impl eframe::App for MediaPlayer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Process any pending GStreamer events
         while self.main_context.iteration(false) {}
 
+        // Handle keyboard shortcuts
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-            println!("Space pressed - toggling playback");
             let _ = self.toggle_playback();
         }
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            println!("Escape pressed - exiting fullscreen");
             self.fullscreen_off(ctx);
         }
 
@@ -331,20 +350,24 @@ impl eframe::App for MediaPlayer {
             self.toggle_fullscreen(ctx);
         }
 
+        // Determine the play/pause button text based on current state
         let play_button_text = match self.get_state() {
             gst::State::Playing => "⏸",
             _ => "⏵",
         };
 
+        // Auto-hide controls in fullscreen mode after 3 seconds of inactivity
         let inactive = ctx.input(|i| i.pointer.time_since_last_movement() > 3.0);
         let controls_shown = !self.is_fullscreen(ctx) || !inactive;
         if inactive {
             ctx.output_mut(|o| o.cursor_icon = egui::CursorIcon::None);
         }
 
+        // Keep our state updated
         self.update_position();
         self.update_texture(ctx);
 
+        // Create the top menu bar
         egui::TopBottomPanel::top("top_panel").show_animated(ctx, controls_shown, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -367,11 +390,12 @@ impl eframe::App for MediaPlayer {
             });
         });
 
+        // Create the bottom control panel with playback controls
         egui::TopBottomPanel::bottom("video_controls").show_animated(ctx, controls_shown, |ui| {
             ui.add_space(3.0);
             ui.horizontal(|ui| {
+                // Play/Pause and Stop buttons
                 if ui.button(play_button_text).clicked() {
-                    println!("{:?}", self.get_state());
                     let _ = self.toggle_playback();
                 }
                 if ui.button("⏹").clicked() {
@@ -397,6 +421,7 @@ impl eframe::App for MediaPlayer {
                     );
                 }
 
+                // Time display and volume controls
                 ui.horizontal(|ui| {
                     ui.set_width(240.0);
                     if let (Some(position), Some(duration)) = (self.position, self.duration) {
@@ -428,10 +453,12 @@ impl eframe::App for MediaPlayer {
             ui.add_space(3.0);
         });
 
+        // Main video display area
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(ctx.style().visuals.panel_fill))
             .show(ctx, |ui| {
                 if let Some(texture) = &self.texture {
+                    // Calculate video dimensions while maintaining aspect ratio
                     let original_size = texture.size_vec2();
                     let aspect_ratio = original_size.x / original_size.y;
                     let mut scaled_height = ui.available_height();
@@ -440,6 +467,8 @@ impl eframe::App for MediaPlayer {
                         scaled_width = ui.available_width();
                         scaled_height = scaled_width / aspect_ratio;
                     }
+
+                    // Display the video frame
                     egui::Frame::none()
                         .fill(egui::Color32::BLACK)
                         .show(ui, |ui| {
@@ -451,6 +480,7 @@ impl eframe::App for MediaPlayer {
                             });
                         });
                 } else {
+                    // Show file selection button when no video is loaded
                     ui.vertical_centered(|ui| {
                         ui.add_space(ui.available_height() / 2.0);
                         if ui.button("Select file").clicked() {
@@ -462,15 +492,19 @@ impl eframe::App for MediaPlayer {
                 }
             });
 
+        // Request continuous updates for smooth playback
         ctx.request_repaint_after(Duration::from_millis(16)); // ~60 FPS
     }
 
+    /// Set state to NULL on exit to prevent gstreamer memory leaks
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let _ = self.set_null();
     }
 }
 
+/// Main entry point for the application
 fn main() -> Result<(), eframe::Error> {
+    // Configure the application window
     let options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_inner_size([800.0, 600.0])
@@ -479,6 +513,7 @@ fn main() -> Result<(), eframe::Error> {
         ..Default::default()
     };
 
+    // Start the application
     eframe::run_native(
         "Video Player",
         options,
