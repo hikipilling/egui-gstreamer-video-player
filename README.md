@@ -1,4 +1,4 @@
-# Simple Video Player
+# Egui + GStreamer Video Player
 
 A simple, performant video player that demonstrates how to integrate GStreamer with Egui in Rust. It took me AGES to figure out how to do this so I hope it helps someone out :)
 
