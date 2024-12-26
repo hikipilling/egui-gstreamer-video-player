@@ -97,10 +97,6 @@ impl MediaPlayer {
         // Set video sink on playbin
         pipeline.set_property("video-sink", &video_bin);
 
-        // Set default URI
-        //let uri = "file:///home/lain/Downloads/testvideo.mp4".to_string();
-        //pipeline.set_property("uri", &uri);
-
         let video_frame = Arc::new(Mutex::new(None));
         let video_frame_clone = Arc::clone(&video_frame);
 
@@ -171,11 +167,6 @@ impl MediaPlayer {
                 glib::ControlFlow::Continue
             })
             .expect("Failed to add bus watch");
-
-        //let ret = pipeline
-        //    .set_state(gst::State::Playing)
-        //    .map_err(|e| PlayerError::GstreamerError(format!("Failed to play: {}", e)))?;
-        //println!("Play state change result: {:?}", ret);
 
         Ok(MediaPlayer {
             pipeline,
@@ -306,35 +297,77 @@ impl MediaPlayer {
             ));
         }
     }
+
+    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        let is_fullscreen = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!is_fullscreen));
+    }
+
+    fn fullscreen_off(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+    }
+
+    fn is_fullscreen(&mut self, ctx: &egui::Context) -> bool {
+        ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+    }
 }
 
 impl eframe::App for MediaPlayer {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         while self.main_context.iteration(false) {}
 
+        if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+            println!("Space pressed - toggling playback");
+            let _ = self.toggle_playback();
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            println!("Escape pressed - exiting fullscreen");
+            self.fullscreen_off(ctx);
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
+            println!("F11 pressed - toggling fullscreen");
+            self.toggle_fullscreen(ctx);
+        }
+
         let play_button_text = match self.get_state() {
             gst::State::Playing => "⏸",
             _ => "⏵",
         };
 
+        let inactive = ctx.input(|i| i.pointer.time_since_last_movement() > 3.0);
+        let controls_shown = !self.is_fullscreen(ctx) || !inactive;
+        if inactive {
+            ctx.output_mut(|o| o.cursor_icon = egui::CursorIcon::None);
+        }
+
         self.update_position();
         self.update_texture(ctx);
 
-        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.menu_button("File", |ui| {
-                if ui.button("Open file").clicked() {
-                    if let Err(e) = self.select_file() {
-                        eprintln!("Error selecting file: {}", e);
+        egui::TopBottomPanel::top("top_panel").show_animated(ctx, controls_shown, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Open file").clicked() {
+                        if let Err(e) = self.select_file() {
+                            eprintln!("Error selecting file: {}", e);
+                        }
+                        ui.close_menu();
                     }
-                    ui.close_menu();
-                }
-                if ui.button("Quit").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                    if ui.button("Quit").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+                ui.menu_button("View", |ui| {
+                    if ui.button("Toggle fullscreen").clicked() {
+                        self.toggle_fullscreen(ctx);
+                        ui.close_menu();
+                    }
+                });
             });
         });
 
-        egui::TopBottomPanel::bottom("video_controls").show(ctx, |ui| {
+        egui::TopBottomPanel::bottom("video_controls").show_animated(ctx, controls_shown, |ui| {
             ui.add_space(3.0);
             ui.horizontal(|ui| {
                 if ui.button(play_button_text).clicked() {
@@ -346,7 +379,7 @@ impl eframe::App for MediaPlayer {
                 }
 
                 // Position slider
-                ui.style_mut().spacing.slider_width = ui.available_width() - 200.0;
+                ui.style_mut().spacing.slider_width = ui.available_width() - 240.0;
                 if let (Some(position), Some(duration)) = (self.position, self.duration) {
                     let mut pos = position.seconds() as f64 / duration.seconds() as f64;
                     if ui
@@ -365,7 +398,7 @@ impl eframe::App for MediaPlayer {
                 }
 
                 ui.horizontal(|ui| {
-                    ui.set_width(200.0);
+                    ui.set_width(240.0);
                     if let (Some(position), Some(duration)) = (self.position, self.duration) {
                         ui.label(format!(
                             "{:02}:{:02} / {:02}:{:02}",
@@ -380,12 +413,15 @@ impl eframe::App for MediaPlayer {
                     ui.separator();
                     ui.label("🔊");
                     let mut volume = self.volume;
-                    ui.style_mut().spacing.slider_width = ui.available_width() - 12.0;
+                    ui.style_mut().spacing.slider_width = ui.available_width() - 36.0;
                     if ui
                         .add(egui::Slider::new(&mut volume, 0.0..=1.0).show_value(false))
                         .changed()
                     {
                         self.set_volume(volume);
+                    }
+                    if ui.button("🗖").clicked() {
+                        self.toggle_fullscreen(ctx);
                     }
                 });
             });
